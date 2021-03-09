@@ -26,9 +26,9 @@
 
 #pragma once
 
-#include "open3d/visualization/rendering/Scene.h"
-
 #include <map>
+
+#include "open3d/visualization/rendering/Scene.h"
 
 namespace open3d {
 namespace visualization {
@@ -66,7 +66,7 @@ public:
     struct LitMaterial {
         Eigen::Vector3f base_color = {0.9f, 0.9f, 0.9f};
         float metallic = 0.f;
-        float roughness = 0.7;
+        float roughness = 0.7f;
         float reflectance = 0.5f;
         float clear_coat = 0.2f;
         float clear_coat_roughness = 0.2f;
@@ -102,6 +102,12 @@ public:
     bool GetShowAxes() const;
     void SetShowAxes(bool show);
 
+    bool GetShowGround() const;
+    void SetShowGround(bool show);
+
+    bool GetSunFollowsCamera() const;
+    void SetSunFollowsCamera(bool follow);
+
     const Eigen::Vector3f& GetBackgroundColor() const;
     void SetBackgroundColor(const Eigen::Vector3f& color);
 
@@ -115,6 +121,7 @@ public:
 
     // TODO: Get/SetMaterial
     const Materials& GetCurrentMaterials() const;
+    Materials& GetCurrentMaterials();
     void SetLitMaterial(const LitMaterial& material, const std::string& name);
     void SetCurrentMaterials(const Materials& materials,
                              const std::string& name);
@@ -145,6 +152,8 @@ private:
     Eigen::Vector3f bg_color_ = {1.0f, 1.0f, 1.0f};
     bool show_skybox_ = false;
     bool show_axes_ = false;
+    bool show_ground_ = false;
+    bool sun_follows_cam_ = false;
     LightingProfile lighting_;
     MaterialType current_type_ = LIT;
     Materials current_materials_;
@@ -156,7 +165,7 @@ private:
 
     std::function<void(bool)> on_changed_;
 
-    void NotifyChanged(bool material_type_changed = false);
+    void NotifyChanged(bool material_changed = false);
 };
 
 }  // namespace visualization

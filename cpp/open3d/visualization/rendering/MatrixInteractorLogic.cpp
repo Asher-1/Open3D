@@ -37,6 +37,10 @@ void MatrixInteractorLogic::SetViewSize(int width, int height) {
     view_height_ = height;
 }
 
+int MatrixInteractorLogic::GetViewWidth() const { return view_width_; }
+
+int MatrixInteractorLogic::GetViewHeight() const { return view_height_; }
+
 const geometry::AxisAlignedBoundingBox& MatrixInteractorLogic::GetBoundingBox()
         const {
     return model_bounds_;
@@ -83,7 +87,7 @@ void MatrixInteractorLogic::Rotate(int dx, int dy) {
     // camera's rotation matrix to get the correct world vector.
     dy = -dy;  // up is negative, but the calculations are easiest to
                // imagine up is positive.
-    Eigen::Vector3f axis(-dy, dx, 0);  // rotate by 90 deg in 2D
+    Eigen::Vector3f axis(float(-dy), float(dx), 0);  // rotate by 90 deg in 2D
     axis = axis.normalized();
     float theta = CalcRotateRadians(dx, dy);
 
@@ -138,9 +142,9 @@ void MatrixInteractorLogic::RotateWorld(int dx,
     matrix_ = m;
 }
 
-double MatrixInteractorLogic::CalcRotateRadians(int dx, int dy) {
-    Eigen::Vector3f moved(dx, dy, 0);
-    return 0.5 * M_PI * moved.norm() / (0.5f * float(view_height_));
+float MatrixInteractorLogic::CalcRotateRadians(int dx, int dy) {
+    Eigen::Vector3f moved(float(dx), float(dy), 0);
+    return 0.5f * float(M_PI) * moved.norm() / (0.5f * float(view_height_));
 }
 
 void MatrixInteractorLogic::RotateZ(int dx, int dy) {
@@ -167,17 +171,18 @@ void MatrixInteractorLogic::RotateZWorld(int dx,
     matrix_ = matrix;
 }
 
-double MatrixInteractorLogic::CalcRotateZRadians(int dx, int dy) {
+float MatrixInteractorLogic::CalcRotateZRadians(int dx, int dy) {
     // Moving half the height should rotate 360 deg (= 2 * PI).
     // This makes it easy to rotate enough without rotating too much.
-    return 4.0 * M_PI * dy / view_height_;
+    return float(4.0 * M_PI * dy / view_height_);
 }
 
-void MatrixInteractorLogic::Dolly(int dy, DragType drag_type) {
-    float dist = CalcDollyDist(dy, drag_type);
+void MatrixInteractorLogic::Dolly(float dy, DragType drag_type) {
     if (drag_type == DragType::MOUSE) {
+        float dist = CalcDollyDist(dy, drag_type, matrix_at_mouse_down_);
         Dolly(dist, matrix_at_mouse_down_);  // copies the matrix
     } else {
+        float dist = CalcDollyDist(dy, drag_type, matrix_);
         Dolly(dist, matrix_);
     }
 }
@@ -198,21 +203,27 @@ void MatrixInteractorLogic::Dolly(float z_dist, Camera::Transform matrix) {
     matrix_ = matrix;
 }
 
-float MatrixInteractorLogic::CalcDollyDist(int dy, DragType drag_type) {
+float MatrixInteractorLogic::CalcDollyDist(float dy,
+                                           DragType drag_type,
+                                           const Camera::Transform& matrix) {
+    float length =
+            (center_of_rotation_ - matrix * Eigen::Vector3f(0.0f, 0.0f, 0.0f))
+                    .norm();
+    length = std::max(float(0.02 * model_size_), length);
     float dist = 0.0f;  // initialize to make GCC happy
     switch (drag_type) {
         case DragType::MOUSE:
             // Zoom out is "push away" or up, is a negative value for
             // mousing
-            dist = float(dy) * 0.0025f * model_size_;
+            dist = float(dy) * 0.0025f * float(length);
             break;
         case DragType::TWO_FINGER:
             // Zoom out is "push away" or up, is a positive value for
             // two-finger scrolling, so we need to invert dy.
-            dist = float(-dy) * 0.01f * model_size_;
+            dist = float(-dy) * 0.01f * float(length);
             break;
         case DragType::WHEEL:  // actual mouse wheel, same as two-fingers
-            dist = float(-dy) * 0.1f * model_size_;
+            dist = float(-dy) * 0.05f * float(length);
             break;
     }
     return dist;

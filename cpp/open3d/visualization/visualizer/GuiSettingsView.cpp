@@ -27,6 +27,7 @@
 #include "open3d/visualization/visualizer/GuiSettingsView.h"
 
 #include <cmath>
+
 #include "open3d/utility/Console.h"
 #include "open3d/utility/FileSystem.h"
 #include "open3d/visualization/gui/Checkbox.h"
@@ -60,13 +61,13 @@ GuiSettingsView::GuiSettingsView(GuiSettingsModel &model,
                                  std::function<void(const char *)> on_load_ibl)
     : model_(model), on_load_ibl_(on_load_ibl) {
     const auto em = theme.font_size;
-    const int lm = std::ceil(0.5 * em);
-    const int grid_spacing = std::ceil(0.25 * em);
+    const int lm = int(std::ceil(0.5 * em));
+    const int grid_spacing = int(std::ceil(0.25 * em));
 
-    const int separation_height = std::ceil(0.75 * em);
+    const int separation_height = int(std::ceil(0.75 * em));
     // (we don't want as much left margin because the twisty arrow is the
     // only thing there, and visually it looks larger than the right.)
-    const gui::Margins base_margins(0.5 * lm, lm, lm, lm);
+    const gui::Margins base_margins(int(std::ceil(0.5 * lm)), lm, lm, lm);
     SetMargins(base_margins);
 
     gui::Margins indent(em, 0, 0, 0);
@@ -89,7 +90,7 @@ GuiSettingsView::GuiSettingsView(GuiSettingsModel &model,
     bg_layout->AddChild(bg_color_);
 
     view_ctrls->AddChild(show_skybox_);
-    view_ctrls->AddFixed(0.25 * em);
+    view_ctrls->AddFixed(int(std::ceil(0.25 * em)));
     view_ctrls->AddChild(bg_layout);
 
     // Show axes
@@ -99,6 +100,13 @@ GuiSettingsView::GuiSettingsView(GuiSettingsModel &model,
     view_ctrls->AddFixed(separation_height);
     view_ctrls->AddChild(show_axes_);
 
+    // Show ground plane
+    show_ground_ = std::make_shared<gui::Checkbox>("Show ground");
+    show_ground_->SetOnChecked(
+            [this](bool is_checked) { model_.SetShowGround(is_checked); });
+    view_ctrls->AddFixed(separation_height);
+    view_ctrls->AddChild(show_ground_);
+
     // Lighting profiles
     lighting_profile_ = std::make_shared<gui::Combobox>();
     for (auto &lp : GuiSettingsModel::lighting_profiles_) {
@@ -107,6 +115,9 @@ GuiSettingsView::GuiSettingsView(GuiSettingsModel &model,
     lighting_profile_->AddItem(CUSTOM_LIGHTING);
     lighting_profile_->SetOnValueChanged([this](const char *, int index) {
         if (index < int(GuiSettingsModel::lighting_profiles_.size())) {
+            sun_follows_camera_->SetChecked(false);
+            sun_dir_->SetEnabled(true);
+            model_.SetSunFollowsCamera(false);
             model_.SetLightingProfile(
                     GuiSettingsModel::lighting_profiles_[index]);
         }
@@ -203,6 +214,12 @@ GuiSettingsView::GuiSettingsView(GuiSettingsModel &model,
         model_.SetCustomLighting(lighting);
     });
 
+    sun_follows_camera_ = std::make_shared<gui::Checkbox>(" ");
+    sun_follows_camera_->SetOnChecked([this](bool checked) {
+        sun_dir_->SetEnabled(!checked);
+        model_.SetSunFollowsCamera(checked);
+    });
+
     sun_color_ = std::make_shared<gui::ColorEdit>();
     sun_color_->SetOnValueChanged([this](const gui::Color &new_color) {
         auto lighting = model_.GetLighting();  // copy
@@ -216,6 +233,8 @@ GuiSettingsView::GuiSettingsView(GuiSettingsModel &model,
     sun_layout->AddChild(sun_intensity_);
     sun_layout->AddChild(std::make_shared<gui::Label>("Direction"));
     sun_layout->AddChild(sun_dir_);
+    sun_layout->AddChild(sun_follows_camera_);
+    sun_layout->AddChild(std::make_shared<gui::Label>("Sun Follows Camera"));
     sun_layout->AddChild(std::make_shared<gui::Label>("Color"));
     sun_layout->AddChild(sun_color_);
 
@@ -280,7 +299,7 @@ GuiSettingsView::GuiSettingsView(GuiSettingsModel &model,
     mat_grid->AddChild(std::make_shared<gui::Label>("Color"));
     auto color_layout = std::make_shared<gui::Horiz>();
     color_layout->AddChild(material_color_);
-    color_layout->AddFixed(0.25 * em);
+    color_layout->AddFixed(int(std::ceil(0.25 * em)));
     color_layout->AddChild(reset_material_color_);
     mat_grid->AddChild(color_layout);
 

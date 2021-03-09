@@ -142,7 +142,7 @@ void AdvancedIndexPreprocessor::RunPreprocess() {
         if (index_tensor.GetDtype() != Dtype::Int64) {
             utility::LogError(
                     "Index tensor must have Int64 dtype, but {} was used.",
-                    DtypeUtil::ToString(index_tensor.GetDtype()));
+                    index_tensor.GetDtype().ToString());
         }
     }
 
@@ -187,7 +187,7 @@ void AdvancedIndexPreprocessor::RunPreprocess() {
     // Put index tensors_ on the same device as tensor_.
     for (size_t i = 0; i < index_tensors_.size(); ++i) {
         if (index_tensors_[i].GetDevice() != tensor_.GetDevice()) {
-            index_tensors_[i] = index_tensors_[i].Copy(tensor_.GetDevice());
+            index_tensors_[i] = index_tensors_[i].To(tensor_.GetDevice());
         }
     }
 

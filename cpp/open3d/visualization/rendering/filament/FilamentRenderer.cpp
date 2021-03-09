@@ -26,12 +26,32 @@
 
 #include "open3d/visualization/rendering/filament/FilamentRenderer.h"
 
+#include <utils/Entity.h>
+
+// 4068: Filament has some clang-specific vectorizing pragma's that MSVC flags
+// 4146: Filament's utils/algorithm.h utils::details::ctz() tries to negate
+//       an unsigned int.
+// 4293: Filament's utils/algorithm.h utils::details::clz() does strange
+//       things with MSVC. Somehow sizeof(unsigned int) > 4, but its size is
+//       32 so that x >> 32 gives a warning. (Or maybe the compiler can't
+//       determine the if statement does not run.)
+// 4305: LightManager.h needs to specify some constants as floats
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4068 4146 4293 4305)
+#endif  // _MSC_VER
+
+#include <backend/PixelBufferDescriptor.h>
 #include <filament/Engine.h>
 #include <filament/LightManager.h>
 #include <filament/RenderableManager.h>
 #include <filament/Renderer.h>
 #include <filament/Scene.h>
 #include <filament/SwapChain.h>
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif  // _MSC_VER
 
 #include "open3d/utility/Console.h"
 #include "open3d/visualization/rendering/filament/FilamentCamera.h"
@@ -49,7 +69,20 @@ FilamentRenderer::FilamentRenderer(filament::Engine& engine,
                                    void* native_drawable,
                                    FilamentResourceManager& resource_mgr)
     : engine_(engine), resource_mgr_(resource_mgr) {
-    swap_chain_ = engine_.createSwapChain(native_drawable);
+    swap_chain_ = engine_.createSwapChain(native_drawable,
+                                          filament::SwapChain::CONFIG_READABLE);
+    renderer_ = engine_.createRenderer();
+
+    materials_modifier_ = std::make_unique<FilamentMaterialModifier>();
+}
+
+FilamentRenderer::FilamentRenderer(filament::Engine& engine,
+                                   int width,
+                                   int height,
+                                   FilamentResourceManager& resource_mgr)
+    : engine_(engine), resource_mgr_(resource_mgr) {
+    swap_chain_ = engine_.createSwapChain(width, height,
+                                          filament::SwapChain::CONFIG_READABLE);
     renderer_ = engine_.createRenderer();
 
     materials_modifier_ = std::make_unique<FilamentMaterialModifier>();
@@ -81,6 +114,21 @@ Scene* FilamentRenderer::GetScene(const SceneHandle& id) const {
 
 void FilamentRenderer::DestroyScene(const SceneHandle& id) {
     scenes_.erase(id);
+}
+
+void FilamentRenderer::SetClearColor(const Eigen::Vector4f& color) {
+    filament::Renderer::ClearOptions co;
+    co.clearColor.r = color.x();
+    co.clearColor.g = color.y();
+    co.clearColor.b = color.z();
+    co.clearColor.a = color.w();
+    co.clear = false;
+    co.discard = true;
+    renderer_->setClearOptions(co);
+}
+
+void FilamentRenderer::SetOnAfterDraw(std::function<void()> callback) {
+    on_after_draw_ = callback;
 }
 
 void FilamentRenderer::UpdateSwapChain() {
@@ -115,12 +163,28 @@ void FilamentRenderer::UpdateSwapChain() {
     swap_chain_ = engine_.createSwapChain(native_win);
 }
 
+void FilamentRenderer::UpdateBitmapSwapChain(int width, int height) {
+    engine_.destroy(swap_chain_);
+    swap_chain_ = engine_.createSwapChain(width, height,
+                                          filament::SwapChain::CONFIG_READABLE);
+}
+
 void FilamentRenderer::BeginFrame() {
     // We will complete render to buffer requests first
-    for (auto& br : buffer_renderers_) {
-        if (br->pending_) {
-            br->Render();
+    if (!buffer_renderers_.empty()) {
+        for (auto& br : buffer_renderers_) {
+            if (br->pending_) {
+                br->Render();
+            }
         }
+
+        // Force the engine to render, otherwise it sometimes doesn't
+        // render for a while, especially on Linux. This means the read
+        // pixels callback does not get called until sometime later,
+        // possibly several draws later.
+        engine_.flushAndWait();
+
+        buffer_renderers_.clear();  // Cleanup
     }
 
     frame_started_ = renderer_->beginFrame(swap_chain_);
@@ -135,13 +199,64 @@ void FilamentRenderer::Draw() {
         if (gui_scene_) {
             gui_scene_->Draw(*renderer_);
         }
+
+        if (on_after_draw_) {
+            on_after_draw_();
+        }
     }
 }
 
 void FilamentRenderer::EndFrame() {
     if (frame_started_) {
         renderer_->endFrame();
+        if (needs_wait_after_draw_) {
+            engine_.flushAndWait();
+            needs_wait_after_draw_ = false;
+        }
     }
+}
+
+namespace {
+
+struct UserData {
+    std::function<void(std::shared_ptr<geometry::Image>)> callback;
+    std::shared_ptr<geometry::Image> image;
+
+    UserData(std::function<void(std::shared_ptr<geometry::Image>)> cb,
+             std::shared_ptr<geometry::Image> img)
+        : callback(cb), image(img) {}
+};
+
+void ReadPixelsCallback(void*, size_t, void* user) {
+    auto* user_data = static_cast<UserData*>(user);
+    user_data->callback(user_data->image);
+    delete user_data;
+}
+
+}  // namespace
+
+void FilamentRenderer::RequestReadPixels(
+        int width,
+        int height,
+        std::function<void(std::shared_ptr<geometry::Image>)> callback) {
+    auto image = std::make_shared<geometry::Image>();
+    image->width_ = width;
+    image->height_ = height;
+    image->num_of_channels_ = 3;
+    image->bytes_per_channel_ = 1;
+    size_t nbytes = image->width_ * image->height_ * image->num_of_channels_ *
+                    image->bytes_per_channel_;
+    image->data_.resize(nbytes, 0);
+    auto* user_data = new UserData(callback, image);
+
+    using namespace filament;
+    using namespace backend;
+
+    PixelBufferDescriptor pd(image->data_.data(), nbytes, PixelDataFormat::RGB,
+                             PixelDataType::UBYTE, ReadPixelsCallback,
+                             user_data);
+    renderer_->readPixels(0, 0, width, height, std::move(pd));
+    needs_wait_after_draw_ = true;
 }
 
 MaterialHandle FilamentRenderer::AddMaterial(
@@ -152,11 +267,6 @@ MaterialHandle FilamentRenderer::AddMaterial(
 MaterialInstanceHandle FilamentRenderer::AddMaterialInstance(
         const MaterialHandle& material) {
     return resource_mgr_.CreateMaterialInstance(material);
-}
-
-MaterialInstanceHandle FilamentRenderer::AddMaterialInstance(
-        const geometry::TriangleMesh::Material& material) {
-    return resource_mgr_.CreateFromDescriptor(material);
 }
 
 MaterialModifier& FilamentRenderer::ModifyMaterial(const MaterialHandle& id) {
@@ -199,14 +309,15 @@ void FilamentRenderer::RemoveMaterialInstance(
     resource_mgr_.Destroy(id);
 }
 
-TextureHandle FilamentRenderer::AddTexture(const ResourceLoadRequest& request) {
+TextureHandle FilamentRenderer::AddTexture(const ResourceLoadRequest& request,
+                                           bool srgb) {
     if (request.path_.empty()) {
         request.error_callback_(request, -1,
                                 "Texture can be loaded only from file");
         return {};
     }
 
-    return resource_mgr_.CreateTexture(request.path_.data());
+    return resource_mgr_.CreateTexture(request.path_.data(), srgb);
 }
 
 void FilamentRenderer::RemoveTexture(const TextureHandle& id) {
@@ -243,8 +354,8 @@ void FilamentRenderer::RemoveSkybox(const SkyboxHandle& id) {
 }
 
 std::shared_ptr<RenderToBuffer> FilamentRenderer::CreateBufferRenderer() {
-    auto renderer = std::make_shared<FilamentRenderToBuffer>(engine_, *this);
-    buffer_renderers_.insert(renderer.get());
+    auto renderer = std::make_shared<FilamentRenderToBuffer>(engine_);
+    buffer_renderers_.insert(renderer);
     return std::move(renderer);
 }
 
@@ -263,13 +374,14 @@ void FilamentRenderer::ConvertToGuiScene(const SceneHandle& id) {
 }
 
 TextureHandle FilamentRenderer::AddTexture(
-        const std::shared_ptr<geometry::Image>& image) {
-    return resource_mgr_.CreateTexture(image);
+        const std::shared_ptr<geometry::Image>& image, bool srgb) {
+    return resource_mgr_.CreateTexture(image, srgb);
 }
 
-void FilamentRenderer::OnBufferRenderDestroyed(FilamentRenderToBuffer* render) {
-    buffer_renderers_.erase(render);
-}
+// void FilamentRenderer::OnBufferRenderDestroyed(FilamentRenderToBuffer*
+// render) {
+//    buffer_renderers_.erase(render);
+//}
 
 }  // namespace rendering
 }  // namespace visualization

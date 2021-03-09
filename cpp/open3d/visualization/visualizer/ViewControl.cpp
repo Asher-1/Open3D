@@ -25,6 +25,7 @@
 // ----------------------------------------------------------------------------
 
 #include "open3d/visualization/visualizer/ViewControl.h"
+
 #include "open3d/utility/Console.h"
 
 // Avoid warning caused by redefinition of APIENTRY macro
@@ -34,6 +35,7 @@
 #endif
 
 #include <GLFW/glfw3.h>
+
 #include <Eigen/Dense>
 #include <cmath>  // jspark
 
@@ -187,16 +189,17 @@ bool ViewControl::ConvertToPinholeCameraParameters(
 }
 
 bool ViewControl::ConvertFromPinholeCameraParameters(
-        const camera::PinholeCameraParameters &parameters) {
+        const camera::PinholeCameraParameters &parameters,
+        bool allow_arbitrary) {
     auto intrinsic = parameters.intrinsic_;
     auto extrinsic = parameters.extrinsic_;
-    if (window_height_ <= 0 || window_width_ <= 0 ||
-        window_height_ != intrinsic.height_ ||
-        window_width_ != intrinsic.width_ ||
-        intrinsic.intrinsic_matrix_(0, 2) !=
-                (double)window_width_ / 2.0 - 0.5 ||
-        intrinsic.intrinsic_matrix_(1, 2) !=
-                (double)window_height_ / 2.0 - 0.5) {
+    if (!allow_arbitrary && (window_height_ <= 0 || window_width_ <= 0 ||
+                             window_height_ != intrinsic.height_ ||
+                             window_width_ != intrinsic.width_ ||
+                             intrinsic.intrinsic_matrix_(0, 2) !=
+                                     (double)window_width_ / 2.0 - 0.5 ||
+                             intrinsic.intrinsic_matrix_(1, 2) !=
+                                     (double)window_height_ / 2.0 - 0.5)) {
         utility::LogWarning(
                 "[ViewControl] ConvertFromPinholeCameraParameters() failed "
                 "because window height and width do not match.");
@@ -206,15 +209,17 @@ bool ViewControl::ConvertFromPinholeCameraParameters(
             (double)window_height_ / (intrinsic.intrinsic_matrix_(1, 1) * 2.0);
     double fov_rad = std::atan(tan_half_fov) * 2.0;
     double old_fov = field_of_view_;
-    field_of_view_ =
-            std::max(std::min(fov_rad * 180.0 / M_PI, FIELD_OF_VIEW_MAX),
-                     FIELD_OF_VIEW_MIN);
-    if (GetProjectionType() == ProjectionType::Orthogonal) {
-        field_of_view_ = old_fov;
-        utility::LogWarning(
-                "[ViewControl] ConvertFromPinholeCameraParameters() failed "
-                "because field of view is impossible.");
-        return false;
+    field_of_view_ = fov_rad * 180.0 / M_PI;
+    if (!allow_arbitrary) {
+        field_of_view_ = std::max(std::min(field_of_view_, FIELD_OF_VIEW_MAX),
+                                  FIELD_OF_VIEW_MIN);
+        if (GetProjectionType() == ProjectionType::Orthogonal) {
+            field_of_view_ = old_fov;
+            utility::LogWarning(
+                    "[ViewControl] ConvertFromPinholeCameraParameters() failed "
+                    "because field of view is impossible.");
+            return false;
+        }
     }
     right_ = extrinsic.block<1, 3>(0, 0).transpose();
     up_ = -extrinsic.block<1, 3>(1, 0).transpose();
@@ -227,7 +232,10 @@ bool ViewControl::ConvertFromPinholeCameraParameters(
     double ideal_zoom = ideal_distance *
                         std::tan(field_of_view_ * 0.5 / 180.0 * M_PI) /
                         bounding_box_.GetMaxExtent();
-    zoom_ = std::max(std::min(ideal_zoom, ZOOM_MAX), ZOOM_MIN);
+    zoom_ = ideal_zoom;
+    if (!allow_arbitrary) {
+        zoom_ = std::max(std::min(ideal_zoom, ZOOM_MAX), ZOOM_MIN);
+    }
     view_ratio_ = zoom_ * bounding_box_.GetMaxExtent();
     distance_ = view_ratio_ / std::tan(field_of_view_ * 0.5 / 180.0 * M_PI);
     lookat_ = eye_ - front_ * distance_;
@@ -254,7 +262,6 @@ void ViewControl::Reset() {
 void ViewControl::SetProjectionParameters() {
     front_ = front_.normalized();
     right_ = up_.cross(front_).normalized();
-    up_ = front_.cross(right_).normalized();  // todo: required?
     if (GetProjectionType() == ProjectionType::Perspective) {
         view_ratio_ = zoom_ * bounding_box_.GetMaxExtent();
         distance_ = view_ratio_ / std::tan(field_of_view_ * 0.5 / 180.0 * M_PI);
@@ -265,6 +272,8 @@ void ViewControl::SetProjectionParameters() {
                 view_ratio_ / std::tan(FIELD_OF_VIEW_STEP * 0.5 / 180.0 * M_PI);
         eye_ = lookat_ + front_ * distance_;
     }
+
+    ResetCameraLocalRotate();
 }
 
 void ViewControl::ChangeFieldOfView(double step) {
@@ -310,6 +319,67 @@ void ViewControl::Translate(double x,
     eye_ += shift;
     lookat_ += shift;
     SetProjectionParameters();
+}
+
+void ViewControl::CameraLocalTranslate(double forward,
+                                       double right,
+                                       double up) {
+    lookat_ += (-forward) * front_.normalized() + right * right_.normalized() +
+               up * up_.normalized();
+    SetProjectionParameters();
+}
+
+void ViewControl::CameraLocalRotate(double x,
+                                    double y,
+                                    double xo /* = 0.0*/,
+                                    double yo /* = 0.0*/) {
+    const double degrees_per_unit = 100 / distance_;
+    const double x_shift = (-x) / window_height_ * view_ratio_ * 2.0;
+    const double y_shift = y / window_height_ * view_ratio_ * 2.0;
+
+    local_rotate_up_accum_ += y_shift;
+    local_rotate_right_accum_ += x_shift;
+
+    const auto m =
+            Eigen::AngleAxisd(
+                    -degrees_per_unit * local_rotate_up_accum_ * M_PI / 180,
+                    start_local_rotate_right_) *
+            Eigen::AngleAxisd(
+                    degrees_per_unit * local_rotate_right_accum_ * M_PI / 180,
+                    start_local_rotate_up_);
+
+    front_ = m * start_local_rotate_front_;
+    lookat_ = start_local_rotate_eye_ - front_ * distance_;
+    up_ = start_local_rotate_up_;
+
+    // Prevent SetProjectionParameters re-setting camera local rotation starts
+    auto orig_up = start_local_rotate_up_;
+    auto orig_right = start_local_rotate_right_;
+    auto orig_eye = start_local_rotate_eye_;
+    auto orig_front = start_local_rotate_front_;
+    auto orig_lookat = start_local_rotate_lookat_;
+    auto orig_up_accum = local_rotate_up_accum_;
+    auto orig_right_accum = local_rotate_right_accum_;
+
+    SetProjectionParameters();
+
+    start_local_rotate_up_ = orig_up;
+    start_local_rotate_right_ = orig_right;
+    start_local_rotate_eye_ = orig_eye;
+    start_local_rotate_front_ = orig_front;
+    start_local_rotate_lookat_ = orig_lookat;
+    local_rotate_up_accum_ = orig_up_accum;
+    local_rotate_right_accum_ = orig_right_accum;
+}
+
+void ViewControl::ResetCameraLocalRotate() {
+    start_local_rotate_up_ = up_;
+    start_local_rotate_right_ = right_;
+    start_local_rotate_eye_ = eye_;
+    start_local_rotate_lookat_ = lookat_;
+    start_local_rotate_front_ = front_;
+    local_rotate_up_accum_ = 0;
+    local_rotate_right_accum_ = 0;
 }
 
 void ViewControl::Roll(double x) {

@@ -26,12 +26,11 @@
 
 #pragma once
 
-#include "open3d/visualization/rendering/Renderer.h"
-
-#include <utils/Entity.h>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
+
+#include "open3d/visualization/rendering/Renderer.h"
 
 /// @cond
 namespace filament {
@@ -58,30 +57,42 @@ public:
     FilamentRenderer(filament::Engine& engine,
                      void* native_drawable,
                      FilamentResourceManager& resource_mgr);
+    // This will create an offscreen renderer
+    explicit FilamentRenderer(filament::Engine& engine,
+                              int width,
+                              int height,
+                              FilamentResourceManager& resource_mgr);
     ~FilamentRenderer() override;
 
     SceneHandle CreateScene() override;
     Scene* GetScene(const SceneHandle& id) const override;
     void DestroyScene(const SceneHandle& id) override;
 
+    virtual void SetClearColor(const Eigen::Vector4f& color) override;
     void UpdateSwapChain() override;
+    void UpdateBitmapSwapChain(int width, int height) override;
 
     void BeginFrame() override;
     void Draw() override;
+    void RequestReadPixels(int width,
+                           int height,
+                           std::function<void(std::shared_ptr<geometry::Image>)>
+                                   callback) override;
     void EndFrame() override;
+
+    void SetOnAfterDraw(std::function<void()> callback) override;
 
     MaterialHandle AddMaterial(const ResourceLoadRequest& request) override;
     MaterialInstanceHandle AddMaterialInstance(
             const MaterialHandle& material) override;
-    MaterialInstanceHandle AddMaterialInstance(
-            const geometry::TriangleMesh::Material& material) override;
     MaterialModifier& ModifyMaterial(const MaterialHandle& id) override;
     MaterialModifier& ModifyMaterial(const MaterialInstanceHandle& id) override;
     void RemoveMaterialInstance(const MaterialInstanceHandle& id) override;
 
-    TextureHandle AddTexture(const ResourceLoadRequest& request) override;
-    TextureHandle AddTexture(
-            const std::shared_ptr<geometry::Image>& image) override;
+    TextureHandle AddTexture(const ResourceLoadRequest& request,
+                             bool srgb = false) override;
+    TextureHandle AddTexture(const std::shared_ptr<geometry::Image>& image,
+                             bool srgb = false) override;
     void RemoveTexture(const TextureHandle& id) override;
 
     IndirectLightHandle AddIndirectLight(
@@ -107,6 +118,7 @@ private:
     filament::Engine& engine_;
     filament::Renderer* renderer_ = nullptr;
     filament::SwapChain* swap_chain_ = nullptr;
+    filament::SwapChain* swap_chain_cached_ = nullptr;
 
     std::unordered_map<REHandle_abstract, std::unique_ptr<FilamentScene>>
             scenes_;
@@ -115,11 +127,12 @@ private:
     std::unique_ptr<FilamentMaterialModifier> materials_modifier_;
     FilamentResourceManager& resource_mgr_;
 
-    std::unordered_set<FilamentRenderToBuffer*> buffer_renderers_;
+    std::unordered_set<std::shared_ptr<FilamentRenderToBuffer>>
+            buffer_renderers_;
 
     bool frame_started_ = false;
-
-    void OnBufferRenderDestroyed(FilamentRenderToBuffer* render);
+    std::function<void()> on_after_draw_;
+    bool needs_wait_after_draw_ = false;
 };
 
 }  // namespace rendering

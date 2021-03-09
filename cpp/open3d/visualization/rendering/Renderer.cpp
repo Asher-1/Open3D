@@ -28,7 +28,10 @@
 
 #include "open3d/geometry/Image.h"
 #include "open3d/utility/Console.h"
+#include "open3d/visualization/rendering/Material.h"
 #include "open3d/visualization/rendering/RenderToBuffer.h"
+#include "open3d/visualization/rendering/Scene.h"
+#include "open3d/visualization/rendering/View.h"
 
 namespace open3d {
 namespace visualization {
@@ -81,25 +84,48 @@ ResourceLoadRequest::ResourceLoadRequest(const char* path,
       error_callback_(std::move(error_callback)) {}
 
 void Renderer::RenderToImage(
-        std::size_t width,
-        std::size_t height,
         View* view,
         Scene* scene,
         std::function<void(std::shared_ptr<geometry::Image>)> cb) {
+    auto vp = view->GetViewport();
     auto render = CreateBufferRenderer();
-    render->CopySettings(view);
-    render->RequestFrame(
-            scene,
+    render->Configure(
+            view, scene, vp[2], vp[3], 3, false,
             // the shared_ptr (render) is const unless the lambda
             // is made mutable
             [render, cb](const RenderToBuffer::Buffer& buffer) mutable {
                 auto image = std::make_shared<geometry::Image>();
-                image->width_ = buffer.width;
-                image->height_ = buffer.height;
+                image->width_ = int(buffer.width);
+                image->height_ = int(buffer.height);
                 image->num_of_channels_ = 3;
                 image->bytes_per_channel_ = 1;
                 image->data_ = std::vector<uint8_t>(buffer.bytes,
                                                     buffer.bytes + buffer.size);
+                cb(image);
+                render = nullptr;
+            });
+}
+
+void Renderer::RenderToDepthImage(
+        View* view,
+        Scene* scene,
+        std::function<void(std::shared_ptr<geometry::Image>)> cb) {
+    auto vp = view->GetViewport();
+    auto render = CreateBufferRenderer();
+    render->Configure(
+            view, scene, vp[2], vp[3], 1, true,
+            // the shared_ptr (render) is const unless the lambda
+            // is made mutable
+            [render, cb](const RenderToBuffer::Buffer& buffer) mutable {
+                auto image = std::make_shared<geometry::Image>();
+                image->width_ = int(buffer.width);
+                image->height_ = int(buffer.height);
+                image->num_of_channels_ = 1;
+                image->bytes_per_channel_ = 4;
+                image->data_.resize(image->width_ * image->height_ *
+                                    image->num_of_channels_ *
+                                    image->bytes_per_channel_);
+                memcpy(image->data_.data(), buffer.bytes, buffer.size);
                 cb(image);
                 render = nullptr;
             });

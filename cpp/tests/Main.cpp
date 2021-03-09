@@ -24,7 +24,9 @@
 // IN THE SOFTWARE.
 // ----------------------------------------------------------------------------
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
+
 #include <cstring>
 #include <string>
 
@@ -58,7 +60,7 @@ int main(int argc, char** argv) {
         open3d::utility::LogInfo("P2P device transfer has been disabled.");
     }
 #endif
-    testing::InitGoogleTest(&argc, argv);
+    testing::InitGoogleMock(&argc, argv);
     open3d::utility::SetVerbosityLevel(open3d::utility::VerbosityLevel::Debug);
     return RUN_ALL_TESTS();
 }

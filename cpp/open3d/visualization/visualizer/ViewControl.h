@@ -81,11 +81,16 @@ public:
     /// \param parameters The pinhole camera parameter to convert to.
     bool ConvertToPinholeCameraParameters(
             camera::PinholeCameraParameters &parameters);
+
     /// Function to get view controller from pinhole camera parameters.
     ///
     /// \param parameters The pinhole camera parameter to convert from.
+    /// \param allow_arbitrary Allow an arbitrary pinhole camera parameters.
+    /// This can be useful to render images or depthmaps without any restriction
+    /// in window size, FOV and zoom.
     bool ConvertFromPinholeCameraParameters(
-            const camera::PinholeCameraParameters &parameters);
+            const camera::PinholeCameraParameters &parameters,
+            bool allow_arbitrary = false);
 
     ProjectionType GetProjectionType() const;
     void SetProjectionParameters();
@@ -125,6 +130,13 @@ public:
                            double y,
                            double xo = 0.0,
                            double yo = 0.0);
+
+    virtual void CameraLocalTranslate(double forward, double right, double up);
+    virtual void CameraLocalRotate(double x,
+                                   double y,
+                                   double xo = 0.0,
+                                   double yo = 0.0);
+    virtual void ResetCameraLocalRotate();
 
     // Function to process rolling
     /// \param x is the distances the mouse cursor has moved.
@@ -205,6 +217,14 @@ protected:
     gl_util::GLMatrix4f view_matrix_;
     gl_util::GLMatrix4f model_matrix_;
     gl_util::GLMatrix4f MVP_matrix_;
+
+    Eigen::Vector3d start_local_rotate_up_;
+    Eigen::Vector3d start_local_rotate_right_;
+    Eigen::Vector3d start_local_rotate_front_;
+    Eigen::Vector3d start_local_rotate_eye_;
+    Eigen::Vector3d start_local_rotate_lookat_;
+    double local_rotate_up_accum_;
+    double local_rotate_right_accum_;
 };
 
 }  // namespace visualization

@@ -26,6 +26,18 @@
 
 #include "open3d/visualization/rendering/filament/FilamentRenderToBuffer.h"
 
+// 4068: Filament has some clang-specific vectorizing pragma's that MSVC flags
+// 4146: PixelBufferDescriptor assert unsigned is positive before subtracting
+//       but MSVC can't figure that out.
+// 4293: Filament's utils/algorithm.h utils::details::clz() does strange
+//       things with MSVC. Somehow sizeof(unsigned int) > 4, but its size is
+//       32 so that x >> 32 gives a warning. (Or maybe the compiler can't
+//       determine the if statement does not run.)
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4068 4146 4293)
+#endif  // _MSC_VER
+
 #include <filament/Engine.h>
 #include <filament/RenderableManager.h>
 #include <filament/Renderer.h>
@@ -34,6 +46,10 @@
 #include <filament/Texture.h>
 #include <filament/View.h>
 #include <filament/Viewport.h>
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif  // _MSC_VER
 
 #include "open3d/utility/Console.h"
 #include "open3d/visualization/rendering/filament/FilamentEngine.h"
@@ -50,13 +66,9 @@ FilamentRenderToBuffer::FilamentRenderToBuffer(filament::Engine& engine)
     renderer_ = engine_.createRenderer();
 }
 
-FilamentRenderToBuffer::FilamentRenderToBuffer(filament::Engine& engine,
-                                               FilamentRenderer& parent)
-    : parent_(&parent), engine_(engine) {
-    renderer_ = engine_.createRenderer();
-}
-
 FilamentRenderToBuffer::~FilamentRenderToBuffer() {
+    if (view_) delete view_;
+
     engine_.destroy(swapchain_);
     engine_.destroy(renderer_);
 
@@ -66,15 +78,56 @@ FilamentRenderToBuffer::~FilamentRenderToBuffer() {
 
         buffer_size_ = 0;
     }
-
-    if (parent_) {
-        parent_->OnBufferRenderDestroyed(this);
-        parent_ = nullptr;
-    }
 }
 
-void FilamentRenderToBuffer::SetDimensions(const std::size_t width,
-                                           const std::size_t height) {
+void FilamentRenderToBuffer::Configure(const View* view,
+                                       Scene* scene,
+                                       int width,
+                                       int height,
+                                       int n_channels,
+                                       bool depth_image,
+                                       BufferReadyCallback cb) {
+    if (!scene) {
+        utility::LogDebug(
+                "No Scene object was provided for rendering into buffer");
+        cb({0, 0, 0, nullptr, 0});
+        return;
+    }
+
+    if (pending_) {
+        utility::LogWarning(
+                "Render to buffer can process only one request at time");
+        cb({0, 0, 0, nullptr, 0});
+        return;
+    }
+
+    if (!depth_image && (n_channels != 3 && n_channels != 4)) {
+        utility::LogWarning(
+                "Render to buffer must have either 3 or 4 channels");
+        cb({0, 0, 0, nullptr, 0});
+        return;
+    }
+
+    if (depth_image) {
+        n_channels_ = 1;
+    } else {
+        n_channels_ = n_channels;
+    }
+    depth_image_ = depth_image;
+    pending_ = true;
+    callback_ = cb;
+
+    // Create a proper copy of the View with scen attached
+    CopySettings(view);
+    auto* downcast_scene = dynamic_cast<FilamentScene*>(scene);
+    if (downcast_scene) {
+        view_->SetScene(*downcast_scene);
+    }
+    SetDimensions(width, height);
+}
+
+void FilamentRenderToBuffer::SetDimensions(const std::uint32_t width,
+                                           const std::uint32_t height) {
     if (swapchain_) {
         engine_.destroy(swapchain_);
     }
@@ -86,22 +139,29 @@ void FilamentRenderToBuffer::SetDimensions(const std::size_t width,
     width_ = width;
     height_ = height;
 
-    buffer_size_ = width * height * 3 * sizeof(std::uint8_t);
+    if (depth_image_) {
+        buffer_size_ = width * height * sizeof(std::float_t);
+    } else {
+        buffer_size_ = width * height * n_channels_ * sizeof(std::uint8_t);
+    }
     if (buffer_) {
         buffer_ = static_cast<std::uint8_t*>(realloc(buffer_, buffer_size_));
+    } else {
+        buffer_ = static_cast<std::uint8_t*>(malloc(buffer_size_));
     }
 }
 
 void FilamentRenderToBuffer::CopySettings(const View* view) {
+    view_ = new FilamentView(engine_, EngineInstance::GetResourceManager());
     auto* downcast = dynamic_cast<const FilamentView*>(view);
-    // NOTE: This class used to copy parameters from the view into a view
-    // managed by this class. However, the copied view caused anomalies when
-    // rendering an image for export. As a workaround, we keep a pointer to the
-    // original view here instead.
-    view_ = const_cast<FilamentView*>(downcast);
     if (downcast) {
-        auto vp = view_->GetNativeView()->getViewport();
-        SetDimensions(vp.width, vp.height);
+        view_->CopySettingsFrom(*downcast);
+    }
+    if (depth_image_) {
+        // Disable post-processing when rendering to depth image. It's uncessary
+        // overhead and the depth buffer is discarded when post-processing is
+        // enabled so the returned image is all 0s.
+        view_->ConfigureForColorPicking();
     }
 }
 
@@ -109,30 +169,6 @@ View& FilamentRenderToBuffer::GetView() { return *view_; }
 
 using PBDParams = std::tuple<FilamentRenderToBuffer*,
                              FilamentRenderToBuffer::BufferReadyCallback>;
-void FilamentRenderToBuffer::RequestFrame(Scene* scene,
-                                          BufferReadyCallback callback) {
-    if (!scene) {
-        utility::LogDebug(
-                "No Scene object was provided for rendering into buffer");
-        callback({0, 0, nullptr, 0});
-        return;
-    }
-
-    if (pending_) {
-        utility::LogWarning(
-                "Render to buffer can process only one request at time");
-        callback({0, 0, nullptr, 0});
-        return;
-    }
-
-    pending_ = true;
-
-    if (buffer_ == nullptr) {
-        buffer_ = static_cast<std::uint8_t*>(malloc(buffer_size_));
-    }
-
-    callback_ = callback;
-}
 
 void FilamentRenderToBuffer::ReadPixelsCallback(void*, size_t, void* user) {
     auto params = static_cast<PBDParams*>(user);
@@ -140,41 +176,46 @@ void FilamentRenderToBuffer::ReadPixelsCallback(void*, size_t, void* user) {
     BufferReadyCallback callback;
     std::tie(self, callback) = *params;
 
-    callback({self->width_, self->height_, self->buffer_, self->buffer_size_});
+    callback({self->width_, self->height_, self->n_channels_, self->buffer_,
+              self->buffer_size_});
 
     self->frame_done_ = true;
     delete params;
 }
 
 void FilamentRenderToBuffer::Render() {
-    bool shotDone = false;
     frame_done_ = false;
-    while (!frame_done_) {
-        if (renderer_->beginFrame(swapchain_)) {
-            renderer_->render(view_->GetNativeView());
+    if (renderer_->beginFrame(swapchain_)) {
+        renderer_->render(view_->GetNativeView());
 
-            if (!shotDone) {
-                shotDone = true;
+        using namespace filament;
+        using namespace backend;
 
-                using namespace filament;
-                using namespace backend;
-
-                auto user_param = new PBDParams(this, callback_);
-                PixelBufferDescriptor pd(
-                        buffer_, buffer_size_, PixelDataFormat::RGB,
-                        PixelDataType::UBYTE, ReadPixelsCallback, user_param);
-
-                auto vp = view_->GetNativeView()->getViewport();
-
-                renderer_->readPixels(vp.left, vp.bottom, vp.width, vp.height,
-                                      std::move(pd));
-            }
-
-            renderer_->endFrame();
+        auto format = (n_channels_ == 3 ? PixelDataFormat::RGB
+                                        : PixelDataFormat::RGBA);
+        auto type = PixelDataType::UBYTE;
+        if (depth_image_) {
+            format = PixelDataFormat::DEPTH_COMPONENT;
+            type = PixelDataType::FLOAT;
         }
+        auto user_param = new PBDParams(this, callback_);
+        PixelBufferDescriptor pd(buffer_, buffer_size_, format, type,
+                                 ReadPixelsCallback, user_param);
+        auto vp = view_->GetNativeView()->getViewport();
+
+        renderer_->readPixels(vp.left, vp.bottom, vp.width, vp.height,
+                              std::move(pd));
+
+        renderer_->endFrame();
     }
 
     pending_ = false;
+}
+
+void FilamentRenderToBuffer::RenderTick() {
+    if (renderer_->beginFrame(swapchain_)) {
+        renderer_->endFrame();
+    }
 }
 
 }  // namespace rendering

@@ -24,9 +24,9 @@
 // IN THE SOFTWARE.
 // ----------------------------------------------------------------------------
 
-#include <Eigen/Core>
-
 #include "open3d/visualization/utility/DrawGeometry.h"
+
+#include <Eigen/Core>
 
 #include "open3d/visualization/gui/Application.h"
 #include "open3d/visualization/visualizer/GuiVisualizer.h"
@@ -73,15 +73,6 @@ bool DrawGeometries(const std::vector<std::shared_ptr<const geometry::Geometry>>
                     "[DrawGeometries] Possibly due to bad geometry or wrong"
                     " geometry type.");
             return false;
-        }
-        for (const auto &geometry_ptr : geometry_ptrs) {
-            if (!visualizer.AddGeometry(geometry_ptr)) {
-                utility::LogWarning("[DrawGeometries] Failed adding geometry.");
-                utility::LogWarning(
-                        "[DrawGeometries] Possibly due to bad geometry or wrong"
-                        " geometry type.");
-                return false;
-            }
         }
     }
 

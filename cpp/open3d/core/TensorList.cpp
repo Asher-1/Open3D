@@ -72,7 +72,7 @@ TensorList TensorList::FromTensor(const Tensor& tensor, bool inplace) {
     }
 }
 
-TensorList TensorList::Copy() const {
+TensorList TensorList::Clone() const {
     TensorList copied(*this);
     copied.CopyFrom(*this);
     return copied;
@@ -81,15 +81,9 @@ TensorList TensorList::Copy() const {
 void TensorList::CopyFrom(const TensorList& other) {
     *this = other;
     // Copy the full other.internal_tensor_, not just other.AsTensor().
-    internal_tensor_ = other.internal_tensor_.Copy();
+    internal_tensor_ = other.internal_tensor_.Clone();
     // After copy, the resulting tensorlist is always resizable.
     is_resizable_ = true;
-}
-
-void TensorList::ShallowCopyFrom(const TensorList& other) {
-    // Copy assignment operator is performing shallow copy.
-    // After copy, this.is_resizable_ == other.is_resizable_.
-    *this = other;
 }
 
 Tensor TensorList::AsTensor() const {
@@ -115,8 +109,7 @@ void TensorList::PushBack(const Tensor& tensor) {
     }
     if (GetDtype() != tensor.GetDtype()) {
         utility::LogError("TensorList has dtype {}, but tensor has shape {}.",
-                          DtypeUtil::ToString(GetDtype()),
-                          DtypeUtil::ToString(tensor.GetDtype()));
+                          GetDtype().ToString(), tensor.GetDtype().ToString());
     }
     if (GetDevice() != tensor.GetDevice()) {
         utility::LogError("TensorList has device {}, but tensor has shape {}.",
@@ -141,8 +134,7 @@ void TensorList::Extend(const TensorList& other) {
     }
     if (GetDtype() != other.GetDtype()) {
         utility::LogError("TensorList dtype {} and {} are inconsistent.",
-                          DtypeUtil::ToString(GetDtype()),
-                          DtypeUtil::ToString(other.GetDtype()));
+                          GetDtype().ToString(), other.GetDtype().ToString());
     }
 
     // Expand *this.
@@ -157,7 +149,7 @@ void TensorList::Extend(const TensorList& other) {
 
 TensorList TensorList::Concatenate(const TensorList& a, const TensorList& b) {
     // A full copy of a is required.
-    TensorList result = a.Copy();
+    TensorList result = a.Clone();
     result.Extend(b);
     return result;
 }
@@ -222,7 +214,7 @@ int64_t TensorList::ComputeReserveSize(int64_t n) {
 std::string TensorList::ToString() const {
     return fmt::format(
             "TensorList[size: {}, element_shape: {}, dtype: {}, device: {}]",
-            size_, element_shape_.ToString(), DtypeUtil::ToString(GetDtype()),
+            size_, element_shape_.ToString(), GetDtype().ToString(),
             GetDevice().ToString());
 }
 
